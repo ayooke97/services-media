@@ -4,27 +4,74 @@ const isBase64 = require("is-base64");
 const base64Img = require("base64-img");
 const path = require("path");
 const fs = require("fs");
+const cacheMiddleware = require('express-cache-middleware');
+const cacheManager = require('cache-manager');
+
+// Create memory cache
+const memoryCache = cacheManager.caching({
+  store: 'memory',
+  max: 100,
+  ttl: 60 * 60 // 1 hour
+});
+
+// Initialize cache middleware
+const cacheMiddlewareInstance = new cacheMiddleware({
+  middleware: memoryCache
+});
+cacheMiddlewareInstance.attach(router);
 
 const { Media } = require("../models");
 
+// Helper function to set cache headers
+const setCacheHeaders = (res) => {
+  res.set({
+    'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
+    'Surrogate-Control': 'public, max-age=3600',
+    'ETag': true
+  });
+};
+
 // Rute untuk mendapatkan semua media
 router.get("/", async (req, res) => {
-  // Mengambil semua entri media dari database
-  const media = await Media.findAll({
-    attributes: ["id", "image"],
-  });
+  try {
+    // Check if we have a cached response
+    const cacheKey = 'all_media';
+    const cachedMedia = await memoryCache.get(cacheKey);
+    
+    if (cachedMedia) {
+      setCacheHeaders(res);
+      return res.json({
+        status: "success",
+        data: cachedMedia,
+      });
+    }
 
-  const mappedMedia = media.map((m) => {
-    // Menambahkan http:// dan host ke URL gambar
-    m.image = `http://${req.get("host")}/${m.image}`;
-    return m; // Mengembalikan objek media yang telah dimodifikasi
-  });
+    // If no cache, get from database
+    const media = await Media.findAll({
+      attributes: ["id", "image"],
+    });
 
-  // Mengembalikan respons JSON dengan status dan data media
-  return res.json({
-    status: "success",
-    data: mappedMedia,
-  });
+    const mappedMedia = media.map((m) => ({
+      id: m.id,
+      image: `http://${req.get("host")}/${m.image}`
+    }));
+
+    // Store in cache
+    await memoryCache.set(cacheKey, mappedMedia);
+    
+    // Set cache headers
+    setCacheHeaders(res);
+
+    return res.json({
+      status: "success",
+      data: mappedMedia,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: error.message
+    });
+  }
 });
 
 // Rute untuk meng-upload media baru
